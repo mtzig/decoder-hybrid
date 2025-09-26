@@ -3,18 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # Import ALL the building blocks from your layers file
-from layers import (
-    LookaheadDecoderBlock, 
-    LinearProjectionHKHV, 
-    Mamba2HKHV,
-    RMSNorm,
-    SwiGLU
-)
+from layers.attention import LLAttentionBlock
+from layers.resids import RMSNorm, SwiGLU
+from layers.HKHV import LinearProjectionHKHV, Mamba2HKHV
 
-class TransformerBlock(nn.Module):
+class LLTransformerBlock(nn.Module):
     def __init__(self, dim: int, num_heads: int, hkv_processor: nn.Module):
         super().__init__()
-        self.attn = LookaheadDecoderBlock(
+        self.attn = LLAttentionBlock(
             dim=dim, 
             num_heads=num_heads, 
             hkv_processor=hkv_processor
@@ -28,7 +24,7 @@ class TransformerBlock(nn.Module):
         x = x + self.ffn(self.norm2(x))
         return x
 
-class LookaheadTransformer(nn.Module):
+class LLTransformer(nn.Module):
     """
     A complete Transformer model composed of multiple TransformerBlocks.
 
@@ -40,13 +36,13 @@ class LookaheadTransformer(nn.Module):
         hkv_processor_factory (callable): A function or class that returns an 
                                           instance of the HK/HV processor.
     """
-    def __init__(self, vocab_size: int, dim: int, depth: int, num_heads: int, hkv_processor_factory):
+    def __init__(self, vocab_size: int, dim: int, depth: int, num_heads: int, hkv_processor_factory=None):
         super().__init__()
         self.token_emb = nn.Embedding(vocab_size, dim)
         
         # Create a stack of TransformerBlocks
         self.layers = nn.ModuleList([
-            TransformerBlock(dim, num_heads, hkv_processor_factory()) 
+            LLTransformerBlock(dim, num_heads, hkv_processor_factory()) 
             for _ in range(depth)
         ])
         
@@ -80,7 +76,7 @@ if __name__ == '__main__':
     print("🚀 Experiment 1: Linear Projection HK/HV Processor")
     # We use a lambda function as a factory to create a new instance for each layer
     linear_factory = lambda: LinearProjectionHKHV(dim=dim)
-    model_linear = LookaheadTransformer(
+    model_linear = LLTransformer(
         vocab_size=vocab_size,
         dim=dim,
         depth=depth,
@@ -91,7 +87,7 @@ if __name__ == '__main__':
     # --- Experiment 2: Using Mamba2 for HK/HV ---
     print("\n🐍 Experiment 2: Mamba2 HK/HV Processor")
     mamba_factory = lambda: Mamba2HKHV(dim=dim)
-    model_mamba = LookaheadTransformer(
+    model_mamba = LLTransformer(
         vocab_size=vocab_size,
         dim=dim,
         depth=depth,

@@ -2,31 +2,7 @@ import torch, torch.nn as nn, torch.nn.functional as F
 from rotary_embedding_torch import RotaryEmbedding
 from mamba_ssm import Mamba2
 
-class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6):
-        super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
 
-    def _norm(self, x):
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
-
-    def forward(self, x):
-        return self._norm(x.float()).type_as(x) * self.weight
-
-class SwiGLU(nn.Module):
-    def __init__(self, dim: int, hidden_dim: int = None, ffn_hidden_mult: int = 4):
-        super().__init__()
-        hidden_dim = hidden_dim if hidden_dim is not None else int(ffn_hidden_mult * dim)
-        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
-        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
-        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
-
-    def forward(self, x):
-        gate = self.w1(x)
-        up = self.w3(x)
-        fused_swiglu = F.silu(gate) * up
-        return self.w2(fused_swiglu)
 
 class LookaheadDecoderBlock(nn.Module):
     """
@@ -89,6 +65,16 @@ class LookaheadDecoderBlock(nn.Module):
         multihead_out = W @ V - torch.sigmoid(self.alpha) * (HV @ V.transpose(-2,-1) * W).sum(dim=-1, keepdim=True) * HV
 
         return multihead_out
+    
+    def _causal_attention(self, Q, K, V):
+        """
+        Q, K, V: (B, H, N, Hd)
+   
+        """
+
+        # Scaled dot-product attention
+        return F.scaled_dot_product_attention(Q, K, V, is_causal=True)
+
 
     def forward(self, X):
         B, N, D = X.size()
@@ -104,97 +90,21 @@ class LookaheadDecoderBlock(nn.Module):
         Q = self.rotary_emb.rotate_queries_or_keys(Q)
         K = self.rotary_emb.rotate_queries_or_keys(K)
 
-        # COMPUTE ATTENTION SCORE HERE
+        if self.hkv_processor is not None:
+            HK, HV = self.hkv_processor(X)
+            HK = HK.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
+            HV = HV.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
 
-        HK, HV = self.hkv_processor(X)
-        HK = HK.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-        HV = HV.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-
-        multihead_out = self._lookahead_attention(Q, K, V, HK, HV)
+            multihead_out = self._lookahead_attention(Q, K, V, HK, HV)
+        else:
+            multihead_out = self._causal_attention(Q, K, V)
 
 
         attn_output = multihead_out.transpose(1, 2).contiguous().view(B, N, -1)
         out = self.to_out(attn_output)
         return out
 
-class CausalAttentionDecoderBlock(nn.Module):
-    """
-    A standard causal multi-head self-attention block using the same API
-    structure as LookaheadDecoderBlock.
 
-    Args:
-        dim (int): The embedding dimension.
-        num_heads (int): Number of attention heads.
-        hkv_processor (nn.Module, optional): Kept for API parity; unused.
-    """
-    def __init__(self, dim, num_heads=8):
-        super().__init__()
-        assert dim % num_heads == 0, "The embedding dimension must be divisible by num_heads."
-
-        # Core parameters
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
-
-
-
-        # Projections
-        self.to_qkv = nn.Linear(dim, dim * 3, bias=False)
-        self.to_out = nn.Linear(dim, dim)
-
-        # Positional embeddings
-        self.rotary_emb = RotaryEmbedding(self.head_dim)
-
-    def _causal_attention(self, Q, K, V, attn_bias=None):
-        """
-        Q, K, V: (B, H, N, Hd)
-        attn_bias: optional tensor broadcastable to (B, H, N, N)
-        """
-        B, H, N, Hd = Q.shape
-
-        # Scaled dot-product attention
-        attn_scores = torch.matmul(Q, K.transpose(-2, -1)) * self.scale  # (B, H, N, N)
-
-        # Causal mask (allow attending to self and past only)
-        causal_mask = torch.triu(
-            torch.ones(N, N, device=attn_scores.device, dtype=torch.bool), diagonal=1
-        )  # True above diagonal
-        attn_scores = attn_scores.masked_fill(causal_mask, float("-inf"))
-
-        # Optional additive bias (e.g., ALiBi, padding mask)
-        if attn_bias is not None:
-            attn_scores = attn_scores + attn_bias
-
-        attn = F.softmax(attn_scores, dim=-1)
-        out = torch.matmul(attn, V)  # (B, H, N, Hd)
-        return out
-
-    def forward(self, X, attn_bias=None):
-        """
-        X: (B, N, D)
-        attn_bias: optional tensor broadcastable to (B, H, N, N)
-        """
-        B, N, D = X.shape
-
-        # Project and split into Q, K, V
-        Q, K, V = self.to_qkv(X).chunk(3, dim=-1)  # each (B, N, D)
-
-        # (B, H, N, Hd)
-        Q = Q.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-        K = K.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-        V = V.view(B, N, self.num_heads, self.head_dim).transpose(1, 2)
-
-        # Apply rotary embeddings to Q and K
-        Q = self.rotary_emb.rotate_queries_or_keys(Q)
-        K = self.rotary_emb.rotate_queries_or_keys(K)
-
-        # Standard causal attention
-        multihead_out = self._causal_attention(Q, K, V, attn_bias=attn_bias)
-
-        # Merge heads
-        attn_output = multihead_out.transpose(1, 2).contiguous().view(B, N, D)
-        out = self.to_out(attn_output)
-        return out
 
 class LinearProjectionHKHV(nn.Module):
     """
