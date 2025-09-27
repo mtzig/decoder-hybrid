@@ -3,9 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # Import ALL the building blocks from your layers file
-from layers.attention import LLAttentionBlock
-from layers.resids import RMSNorm, SwiGLU
-from layers.HKHV import LinearProjectionHKHV, Mamba2HKHV
+from .layers.attention import LLAttentionBlock
+from .layers.resids import RMSNorm, SwiGLU
+from .layers.HKHV import LinearProjectionHKHV, Mamba2HKHV
 
 class LLTransformerBlock(nn.Module):
     def __init__(self, dim: int, num_heads: int, hkv_processor: nn.Module):

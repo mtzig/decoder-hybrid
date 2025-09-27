@@ -1,4 +1,4 @@
-import torch, torch.nn as nn
+import torch, torch.nn as nn, torch.nn.functional as F
 
 
 class RMSNorm(nn.Module):

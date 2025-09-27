@@ -1,3 +1,4 @@
 torch
 rotary-embedding-torch
 mamba-ssm
+transformers
