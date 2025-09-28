@@ -15,13 +15,13 @@ class LLAttentionBlock(nn.Module):
         hv_processor (nn.Module, optional): A module to process the input tensor X 
                                             to generate HV. Defaults to nn.Identity.
     """
-    def __init__(self, dim, num_heads=8, hkv_processor=None):
+    def __init__(self, dim, num_heads=8, head_dim = 64, hkv_processor=None):
         super().__init__()
         assert dim % num_heads == 0, "The embedding dimension must be divisible by num_heads."
 
         # Core Parameters
         self.num_heads = num_heads
-        self.head_dim = dim // num_heads
+        self.head_dim = dim // num_heads if head_dim is None else head_dim
         self.scale = self.head_dim ** -0.5
 
         if hkv_processor is not None:
@@ -29,15 +29,15 @@ class LLAttentionBlock(nn.Module):
             self.alpha = nn.Parameter(torch.ones(1, num_heads, 1, 1))
 
         # Projection layers
-        self.to_qkv = nn.Linear(dim, dim * 3, bias=False)
-        self.to_out = nn.Linear(dim, dim)
+        self.to_qkv = nn.Linear(dim, self.head_dim * self.num_heads * 3, bias=False)
+        self.to_out = nn.Linear(self.head_dim * self.num_heads, dim)
 
         # Positional embeddings
         self.rotary_emb = RotaryEmbedding(self.head_dim)
         
         # Flexible processors for HK and HV
-        # If no processor is provided, it will just pass the input through (X -> X)
-        self.hkv_processor = hkv_processor if hkv_processor is not None else nn.Identity()
+        # If no processor is provided, defaults to standard decoder model
+        self.hkv_processor = hkv_processor() if hkv_processor is not None else None
 
 
 
@@ -62,6 +62,9 @@ class LLAttentionBlock(nn.Module):
         # weird hybrid output...
         # TODO: try to write some Triton kernel for this lol
         multihead_out = W @ V - torch.sigmoid(self.alpha) * (HV @ V.transpose(-2,-1) * W).sum(dim=-1, keepdim=True) * HV
+
+        # fixed weighting (helps?)
+        # multihead_out = 0.5 * W @ V +   0.5 * (HV @ V.transpose(-2,-1) * W).sum(dim=-1, keepdim=True) * HV
 
         return multihead_out
     

@@ -8,11 +8,12 @@ from .layers.resids import RMSNorm, SwiGLU
 from .layers.HKHV import LinearProjectionHKHV, Mamba2HKHV
 
 class LLTransformerBlock(nn.Module):
-    def __init__(self, dim: int, num_heads: int, hkv_processor: nn.Module):
+    def __init__(self, dim: int, num_heads: int, head_dim: int, hkv_processor: nn.Module):
         super().__init__()
         self.attn = LLAttentionBlock(
             dim=dim, 
             num_heads=num_heads, 
+            head_dim=head_dim,
             hkv_processor=hkv_processor
         )
         self.ffn = SwiGLU(dim=dim)
@@ -36,13 +37,13 @@ class LLTransformer(nn.Module):
         hkv_processor_factory (callable): A function or class that returns an 
                                           instance of the HK/HV processor.
     """
-    def __init__(self, vocab_size: int, dim: int, depth: int, num_heads: int, hkv_processor_factory=None):
+    def __init__(self, vocab_size: int, dim: int, depth: int, num_heads: int, head_dim: int, hkv_processor_factory=None):
         super().__init__()
         self.token_emb = nn.Embedding(vocab_size, dim)
         
         # Create a stack of TransformerBlocks
         self.layers = nn.ModuleList([
-            LLTransformerBlock(dim, num_heads, hkv_processor_factory()) 
+            LLTransformerBlock(dim, num_heads, head_dim, hkv_processor_factory) 
             for _ in range(depth)
         ])
         

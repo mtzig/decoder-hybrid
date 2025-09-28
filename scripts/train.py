@@ -29,9 +29,6 @@ from transformers import (
 import torch
 from dec_hybrid.models_hf import LLTransformerConfig, LLTransformerForCausalLM
 
-# ---- Your model is already registered with Auto*, just import it to run the registration side-effect
-# from your_module_file import LLTransformerConfig, LLTransformerForCausalLM  # if needed explicitly
-from transformers import AutoConfig  # used for building config
 
 # ---------------- Helpers ----------------
 def group_texts(examples, block_size: int):
@@ -141,12 +138,13 @@ def main():
         dim=model_cfg.get("dim", 512),
         depth=model_cfg.get("depth", 6),
         num_heads=model_cfg.get("num_heads", 8),
+        head_dim=model_cfg.get("head_dim", 64),
         hkv_processor_factory=model_cfg.get("hkv_processor_factory", "decoder-only"),
     )
 
 
 
-    model = LLTransformerForCausalLM(ll_config)
+    model = torch.compile(LLTransformerForCausalLM(ll_config))
 
     def compute_loss(outputs, labels, num_items_in_batch):
         shift_logits = outputs[..., :-1, :].contiguous()

@@ -2,19 +2,20 @@ import torch.nn.functional as F
 from transformers import PreTrainedModel, PretrainedConfig
 from .model import LLTransformer
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from .layers.HKHV import LinearProjectionHKHV, Mamba2HKHV
+from .layers.HKHV import LinearProjectionHKHV, Mamba2HKHV, AR1HKHV
 from transformers import AutoConfig, AutoModelForCausalLM
 
 
 class LLTransformerConfig(PretrainedConfig):
     model_type = "LLTransformer"
 
-    def __init__(self, vocab_size=30522, dim=512, depth=6, num_heads=8, hkv_processor_factory='decoder-only',**kwargs):
+    def __init__(self, vocab_size=30522, dim=512, depth=6, num_heads=8, head_dim=64, hkv_processor_factory='decoder-only',**kwargs):
         super().__init__(**kwargs)
         self.vocab_size = vocab_size
         self.dim = dim
         self.depth = depth
         self.num_heads = num_heads
+        self.head_dim = head_dim
         self.hkv_processor_factory = hkv_processor_factory
 
 class  LLTransformerForCausalLM(PreTrainedModel):
@@ -26,9 +27,11 @@ class  LLTransformerForCausalLM(PreTrainedModel):
         if config.hkv_processor_factory == 'decoder-only':
             hkv_processor_factory = None
         elif config.hkv_processor_factory == 'linear':
-            hkv_processor_factory = lambda: LinearProjectionHKHV(dim=config.dim)
+            hkv_processor_factory = lambda: LinearProjectionHKHV(dim=config.dim, num_heads=config.num_heads, head_dim=config.head_dim)
         elif config.hkv_processor_factory == 'mamba2':
-            hkv_processor_factory = lambda: Mamba2HKHV(dim=config.dim)
+            hkv_processor_factory = lambda: Mamba2HKHV(dim=config.dim, num_heads=config.num_heads, head_dim=config.head_dim)
+        elif config.hkv_processor_factory == 'ar1':
+            hkv_processor_factory = lambda: AR1HKHV(dim=config.dim, num_heads=config.num_heads, head_dim=config.head_dim)
         else:
             raise ValueError(f"Unknown hkv_processor_factory: {config.hkv_processor_factory}")
         
@@ -37,6 +40,7 @@ class  LLTransformerForCausalLM(PreTrainedModel):
             dim=config.dim,
             depth=config.depth,
             num_heads=config.num_heads,
+            head_dim=config.head_dim,
             hkv_processor_factory=hkv_processor_factory
         )
 
@@ -49,7 +53,7 @@ class  LLTransformerForCausalLM(PreTrainedModel):
         """
         computes forward conforming to Huggingface's transformers library
         """
-        
+
         logits = self.transformer(input_ids)  # or self.transformer(input_ids, attention_mask=attention_mask)
 
         # loss = None

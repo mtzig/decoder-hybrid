@@ -14,11 +14,11 @@ data:
   tokenizer_name: "meta-llama/Meta-Llama-3-8B"  # swap to a real LLaMA tokenizer if you have access
   block_size: 1024
   eval_ratio: 0.01
-  max_train_samples: 500   # optional for dev; remove to train full
+  max_train_samples: 200000   # optional for dev; remove to train full
   streaming: true           # set true if you want to stream then convert to map-style
 
 training:
-  output_dir: "./outputs/lltransformer-linear-test1-small"
+  output_dir: "./outputs/lltransformer-linear-test3-fixed-alphaweights"
   seed: 1234
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 4
