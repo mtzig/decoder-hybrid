@@ -29,7 +29,7 @@ class LLAttentionBlock(nn.Module):
 
         if hkv_processor:
             # Learnable parameter for lookahead modulation
-            self.to_kvkv = nn.Linear(dim, self.head_dim * self.num_heads * 4, bias=False)
+            self.to_kvkv = nn.Linear(dim, self.head_dim * self.num_heads * 2, bias=False)
             self.hkv_processor = True
 
 
@@ -58,7 +58,7 @@ class LLAttentionBlock(nn.Module):
         return F.scaled_dot_product_attention(Q, K, V, is_causal=True)
 
 
-    def chunked_parallel_implementation(self, Q, KK, VK, KV, VV, chunk_size=128):
+    def chunked_parallel_implementation2(self, Q, KK, VK, KV, VV, chunk_size=128):
         """
         A memory-efficient parallel implementation suitable for training.
         """
@@ -115,6 +115,55 @@ class LLAttentionBlock(nn.Module):
 
         return final_y, final_sv
 
+
+    def chunked_parallel_implementation(self, Q, KK, VK, chunk_size=128):
+        """
+        A memory-efficient parallel implementation suitable for training.
+        """
+        batch_size, num_heads, seq_len, head_dim = Q.shape
+        device, dtype = Q.device, Q.dtype
+
+        S0 = torch.eye(head_dim, device=device, dtype=dtype) * (head_dim ** 0.5)
+        SK_state = S0.unsqueeze(0).unsqueeze(0).repeat(batch_size, num_heads, 1, 1)
+
+        outputs_y = []
+        outputs_sv = []
+
+        # Process the sequence in chunks for memory efficiency
+        for i in range(0, seq_len, chunk_size):
+            chunk_end = i + chunk_size
+            q_chunk = Q[:, :, i:chunk_end]
+            kk_chunk = KK[:, :, i:chunk_end]
+            vk_chunk = VK[:, :, i:chunk_end]
+
+
+            # --- Parallel computation within the chunk ---
+            # 1. Outer products for the chunk. Memory intensive but on a smaller tensor.
+            ok_chunk = torch.einsum('bhni, bhnj -> bhnij', kk_chunk, vk_chunk)
+
+
+            # 2. Intra-chunk prefix sum (cumsum)
+            SK_prefix_sum_chunk = torch.cumsum(ok_chunk, dim=2)
+
+            # 3. Add state from the previous chunk to make the prefix sum global
+            SK_chunk = SK_prefix_sum_chunk + SK_state.unsqueeze(2)
+
+            # --- Normalization and Output Calculation for the chunk---
+            SK_norm = torch.norm(SK_chunk, p='fro', dim=(-2, -1), keepdim=True) + 1e-8
+            SK_normalized_chunk = SK_chunk / SK_norm
+
+
+            y_chunk = torch.einsum('bhni, bhnij -> bhnj', q_chunk, SK_normalized_chunk.transpose(-2,-1))
+            
+            outputs_y.append(y_chunk)
+
+            # --- Update the state for the next chunk ---
+            SK_state = SK_chunk[:, :, -1, :, :]
+        
+        final_y = torch.cat(outputs_y, dim=2)
+
+        return final_y
+    
     def forward(self, X):
         B, N, D = X.size()
 
@@ -130,10 +179,11 @@ class LLAttentionBlock(nn.Module):
 
         if self.hkv_processor:
 
-            KVKV = self.to_kvkv(X).chunk(4, dim=-1)
+            KVKV = self.to_kvkv(X).chunk(2, dim=-1)
 
             # (batch, heads, sequence, head_dim)
-            KK, VK, KV, VV = map(lambda tensor: tensor.view(B, N, self.num_heads, self.head_dim).transpose(1, 2), KVKV)
+            # KK, VK, KV, VV = map(lambda tensor: tensor.view(B, N, self.num_heads, self.head_dim).transpose(1, 2), KVKV)
+            KK, VK = map(lambda tensor: tensor.view(B, N, self.num_heads, self.head_dim).transpose(1, 2), KVKV)
 
             # OK = torch.einsum('bhni, bhnj -> bhnij', KK, VK)
             # OV = torch.einsum('bhni, bhnj -> bhnij', KV, VV)
@@ -160,7 +210,7 @@ class LLAttentionBlock(nn.Module):
 
             # print('compute Q')
 
-            Q, SV = self.chunked_parallel_implementation(Q, KK, VK, KV, VV)
+            Q = self.chunked_parallel_implementation(Q, KK, VK)
             print('lets seee')
             Q = self.rotary_emb.rotate_queries_or_keys(Q)
             K = self.rotary_emb.rotate_queries_or_keys(K)
